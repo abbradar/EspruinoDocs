@@ -64,8 +64,11 @@ How it works:
     <option value="ASCIICAPS" selected>ASCII capitals (32-127)</option>
     <option value="ISO8859-1">ISO8859-1 / ISO Latin (32-255)</option>
     <option value="Numeric">Numeric (46-58)</option>
+    <option value="Custom">Custom</option>
   </select><br/>
   Align to increase sharpness : <input type="checkbox" id="fontJitter"></input><br/>
+  Upload custom character map : <input id="charMapFile" type="file" onchange="onChangeCharMapFile()" /><br/>
+  Character map is a JSON dictionary from font character points to Unicode code points.<br/>
   </form>
 </div>
 <button id="calculateFont" style="font-size: 14pt;">Go!</button><br/>
@@ -80,37 +83,40 @@ var fontRanges = {
  "ASCIICAPS" : {min:32, max:93, txt:"THIS IS A TEST OF THE FONT"},
  "ISO8859-1" : {min:32, max:255, txt:"This is a test of the font"},
  "Numeric" : {min:46, max:58, txt:"0.123456789:/"},
+ "Custom" : {txt:"This is a test of the font"},
 };
 // Each character can be moved around slightly in order to ensure the maximum
 // amount of 'solid' pixels
 var FONT_JITTER = false;
 var cssNode;
 
-function createFont(fontName, fontHeight, BPP, charMin, charMax) {
+function createFont(fontName, fontHeight, BPP, charMap) {
   var canvas = document.getElementById("fontcanvas");
   var ctx = canvas.getContext("2d");
   ctx.font = fontHeight+"px "+fontName;
   ctx.textBaseline = "bottom";
+
+  const emptyImg = { width:0, height:fontHeight+1, data:[] };
 
   function drawChSimple(ch, ox, oy) {
     var xPos = 0;
     var yPos = Math.round(fontHeight*0.5);
     ctx.fillStyle = "black";
     ctx.fillRect(xPos,0,fontHeight*2,fontHeight*2);
-    ctx.fillStyle = "white";  
-    ctx.fillText(ch, xPos + ox, fontHeight + yPos + oy);  
-    
+    ctx.fillStyle = "white";
+    ctx.fillText(ch, xPos + ox, fontHeight + yPos + oy);
+
     var chWidth = Math.round(ctx.measureText(ch).width);
-    var img = { width:0, height:fontHeight+1, data:[] };
+    var img = Object.assign({}, emptyImg);
     if (chWidth) {
-      var yOffset = 0;  
+      var yOffset = 0;
       // sometimes fonts are too high up - if so, nudge them down
       do {
         img = ctx.getImageData(xPos,yPos+yOffset-1,chWidth,1);
         var allClear = true;
         for (var i=0;i<img.data.length;i+=4)
           if (img.data[i]) allClear = false;
-        if (!allClear) yOffset--;          
+        if (!allClear) yOffset--;
       } while(!allClear && yOffset>-fontHeight);
       // Sometimes, fonts drop below the bottom of their
       // font box. In this case, we nudge them up by a pixel or two
@@ -119,7 +125,7 @@ function createFont(fontName, fontHeight, BPP, charMin, charMax) {
         var allClear = true;
         for (var i=0;i<img.data.length;i+=4)
           if (img.data[i]) allClear = false;
-        if (!allClear) yOffset++;          
+        if (!allClear) yOffset++;
       } while(!allClear && yOffset<fontHeight);
       if (yOffset>0) console.log("Nudging character "+JSON.stringify(ch)+" up by "+yOffset+" pixels to it fits");
       if (yOffset<0) console.log("Nudging character "+JSON.stringify(ch)+" down by "+(-yOffset)+" pixels to it fits");
@@ -172,8 +178,11 @@ function createFont(fontName, fontHeight, BPP, charMin, charMax) {
   var fontWidths = [];
   var maxCol = 0, maxP = 0;
   var minY = 10000, maxY = -1;
-  for (var ch=charMin;ch<=charMax;ch++) {
-    var img = drawCh(String.fromCharCode(ch));
+  const charPoints = Object.keys(charMap).map(Number);
+  const charMin = Math.min.apply(null, charPoints);
+  const charMax = Math.max.apply(null, charPoints);
+  for (let ch = charMin; ch <= charMax; ch++) {
+    const img = ch in charMap ? drawCh(String.fromCharCode(charMap[ch])) : emptyImg;
     fontWidths.push(img.width);
     prevImg.data.fill(255);
     for (var x=0;x<img.width;x++) {
@@ -182,7 +191,7 @@ function createFont(fontName, fontHeight, BPP, charMin, charMax) {
         var idx = (x + y*img.width)*4;
         // get greyscale
         var c = (img.data[idx]+img.data[idx+1]+img.data[idx+2]) / 3;
-        if (c>maxCol)maxCol=c;          
+        if (c>maxCol)maxCol=c;
         // shift down to BPP with rounding
         c = (c + (127>>BPP)) >> (8-BPP);
         if (c>=(1<<BPP)) c = (1<<BPP)-1;
@@ -208,7 +217,7 @@ function createFont(fontName, fontHeight, BPP, charMin, charMax) {
       }
       //console.log(s);
     }
-    prevCtx.putImageData( prevImg, (ch&15)*fontHeight, (ch>>4)*fontHeight );     
+    prevCtx.putImageData( prevImg, (ch&15)*fontHeight, (ch>>4)*fontHeight );
   }
   // draw grid lines
   prevCtx.strokeStyle = "red";
@@ -232,7 +241,7 @@ Graphics.prototype.setFont${fontName.replace(/[^A-Za-z0-9]/g,"")} = function(sca
   // Actual height ${maxY+1-minY} (${maxY} - ${minY})
   this.setFontCustom(atob("${btoa(String.fromCharCode.apply(null,fontData))}"), ${charMin}, ${fixedWidth?fontWidths[0]:`atob("${btoa(String.fromCharCode.apply(null,fontWidths))}")`}, ${fontHeight}+(scale<<8)+(${BPP}<<16));
   return this;
-}`.trim();  
+}`.trim();
 }
 
 function onChangeFontFile() {
@@ -243,6 +252,34 @@ function onChangeFontFile() {
     var fontName = fileName.replace(/\W/g, ''); // remove non-alphanumeric chars
     document.getElementById('fontFileName').value = fontName;
   }
+}
+
+function onChangeCharMapFile() {
+  // when user selects a charmap file, set font range to "Custom"
+  var charMapFile = document.getElementById('charMapFile').files[0];
+  if (charMapFile) {
+    document.getElementById('fontRange').value = 'Custom';
+  }
+}
+
+function getCharMap(callback) {
+  const charMapFile = document.getElementById('charMapFile').files[0];
+  if(!charMapFile) {
+    alert("Select custom character map file");
+    return;
+  }
+  const reader = new FileReader();
+  reader.addEventListener("load", function onLoadCharMapData() {
+    let charMap;
+    try {
+      charMap = JSON.parse(reader.result);
+    } catch (e) {
+      alert("Failed to parse character map: " + e);
+      return;
+    }
+    callback(charMap);
+  }, false);
+  reader.readAsText(charMapFile, "UTF-8");
 }
 
 function getFontLinkAndName(callback) {
@@ -293,7 +330,7 @@ function getFontLinkAndName(callback) {
       if (fontName===undefined) {
         m = fontLink.match(/([^/]*)\.otf/);
         if (m!==null)
-          fontName = decodeURI(m[1]);      
+          fontName = decodeURI(m[1]);
       }
       if (fontName===undefined) {
         alert("Unable to work out font family from link");
@@ -304,7 +341,14 @@ function getFontLinkAndName(callback) {
     }
     callback(fontLink, fontName);
   }
+}
 
+function idCharMap(min, max) {
+  const charMap = {};
+  for (let i = min; i < max; i++) {
+    charMap[i] = i;
+  }
+  return charMap;
 }
 
 function loadFontAndCalculate(fontLink, fontName) {
@@ -320,13 +364,22 @@ function loadFontAndCalculate(fontLink, fontName) {
   document.getElementById('fontTest').style = `font-family: '${fontName}';font-size: ${fontHeight}px`;
   document.getElementById('fontTest').innerText = fontRange.txt;
 
-  function callback() {
-    createFont(fontName, fontHeight, fontBPP, fontRange.min, fontRange.max);
+  function callback(charMap) {
+    createFont(fontName, fontHeight, fontBPP, charMap);
+  }
+
+  function charMapCallback() {
+    if (fontRange.min && fontRange.max) {
+      callback(idCharMap(fontRange.min, fontRange.max));
+    } else {
+      getCharMap(callback);
+    }
   }
 
   if (fontLink=="" || (cssNode && cssNode.href == fontLink)) {
     console.log("Font already loaded");
-    return callback();
+    charMapCallback();
+    return;
   }
   if (cssNode) cssNode.remove();
   if (fontLink.match(/\.otf([?#].*)?/) || fontLink.match(/^data:/)) {
@@ -347,7 +400,7 @@ function loadFontAndCalculate(fontLink, fontName) {
   cssNode.onload = function() {
     setTimeout(function() {
       console.log("Font loaded");
-      callback();
+      charMapCallback();
     }, 100);
   };
 }
